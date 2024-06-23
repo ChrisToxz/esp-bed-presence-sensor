@@ -1,9 +1,7 @@
 bool ledState = false;
 
 
-
-
-
+// WiFi
 void initWiFi(){
   Serial.print("Connecting to WiFi");
   WiFi.mode(WIFI_STA);
@@ -29,6 +27,8 @@ void initWiFi(){
   Serial.println(WiFi.localIP());
 }
 
+
+// Init OTA
 void initOTA(){
 
   ArduinoOTA.setPassword(OTA_PASS);
@@ -53,12 +53,12 @@ void initOTA(){
   ArduinoOTA.begin();
 }
 
-
 void setCalibration(float value) {
     EEPROM.put(0, value);
     EEPROM.commit(); // Ensure the data is written to EEPROM
 
     LoadCell.setCalFactor(value);
+    mqtt.publish(CALIBRATION_TOPIC, String(value).c_str()); // Publish calibration value
 }
 
 float getCalibration() {
@@ -67,6 +67,13 @@ float getCalibration() {
     return value;
 }
 
+
+// Publish MQTT message
+void publishMessage(char* text){
+  mqtt.publish(MESSAGE_TOPIC, text);
+}
+
+// MQTT Callback
 void callback(char* topic, byte* payload, unsigned int length) {
 
   String message;
@@ -84,27 +91,43 @@ void callback(char* topic, byte* payload, unsigned int length) {
     // Handle offset action
   } else if (topicStr == SET_TARE_TOPIC){
     Serial.println("Taring..");
-    LoadCell.tareNoDelay();
-    if (LoadCell.getTareStatus() == true) {
-      Serial.println("Tare complete");
-    }
+    LoadCell.tare();
+    Serial.println("Tare complete!");
+  }else if(topicStr == START_CALIBRATION_TOPIC){
+    publishMessage("Calibration started"); delay(500);
+    publishMessage("Please remove all load within 5 seconds"); delay(5000);
+    publishMessage("Tarring now!");
+    LoadCell.tare();
+    publishMessage("Tarred!"); delay(500);
+
+    publishMessage("Now place 2 KG as load within 5 seconds"); delay(7000);
+    LoadCell.refreshDataSet(); //refresh the dataset to be sure that the known mass is measured correct
+    float newCalibrationValue = LoadCell.getNewCalibration(2000); //get the new calibration value
+    setCalibration(newCalibrationValue);
+    publishMessage("Calibration done!");
   }
 }
 
+
+// Init MQTT
 void initMQTT(){
   mqtt.setServer(MQTT_SERVER, 1883);
   mqtt.setCallback(callback);
 }
 
+
+// Connect MQTT
 void connectMQTT() {
   // Loop until we're reconnected
   while (!mqtt.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
     if (mqtt.connect(MQTT_HOSTNAME, MQTT_USER, MQTT_PASS, AVAILABILITY_TOPIC, 2, true, "offline")) {
-      Serial.println("connected");
+      Serial.println("MQTT connected!");
       mqtt.publish(AVAILABILITY_TOPIC, "online", true);
+      mqtt.publish(CALIBRATION_TOPIC, String(getCalibration()).c_str()); // Publish calibration value
       mqtt.subscribe("home/bedsensor/set/#");
+      publishMessage("Im alive!");
     } else {
       Serial.print("failed, rc=");
       Serial.print(mqtt.state());
@@ -113,6 +136,35 @@ void connectMQTT() {
       delay(5000);
     }
   }
+}
+
+
+
+void initLoadCell(){
+  LoadCell.begin();
+  LoadCell.start(3000, true);
+
+  if (LoadCell.getTareTimeoutFlag()) {
+    Serial.println("Timeout, HX711 not found");
+    ESP.restart();
+  }else{
+    Serial.print("Setting Calibration Factor: ");
+    Serial.println(getCalibration());
+    LoadCell.setCalFactor(getCalibration()); // set calibration value
+    Serial.print("Setting Samples: ");
+    Serial.println(samples);
+    LoadCell.setSamplesInUse(samples);
+    LoadCell.tare();
+  }
+}
+
+void handleLoop(){
+  ArduinoOTA.handle();
+  
+  if (!mqtt.connected()) {
+    connectMQTT();
+  }
+  mqtt.loop();
 }
 
 void resetLED(){
