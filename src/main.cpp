@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include <HX711_ADC.h>
+#include <ArduinoJson.h>
 #include "../include/config.h"
 
 WiFiClient    espClient;
